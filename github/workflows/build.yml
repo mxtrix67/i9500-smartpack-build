@@ -1,0 +1,99 @@
+name: Build I9500 SmartPack RR Kernel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Clone SmartPack I9500 source
+        shell: bash
+        run: |
+          set -e
+          git clone --depth 1 --branch aosp \
+            https://github.com/SmartPack/SmartPack-Kernel-Project_ja3g.git kernel
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            git wget unzip zip cpio perl rsync gcc g++ make \
+            device-tree-compiler
+
+      - name: Install Android NDK r14b
+        shell: bash
+        run: |
+          set -e
+          cd "$HOME"
+          wget -q https://dl.google.com/android/repository/android-ndk-r14b-linux-x86_64.zip
+          unzip -q android-ndk-r14b-linux-x86_64.zip
+          echo "NDK_HOME=$HOME/android-ndk-r14b" >> "$GITHUB_ENV"
+
+      - name: Verify dm-crypt is enabled in I9500 configuration
+        shell: bash
+        run: |
+          set -e
+          cd kernel
+          DEFCONFIG="arch/arm/configs/lineageos_@ja3g@_defconfig"
+          test -f "$DEFCONFIG"
+          grep -qx 'CONFIG_BLK_DEV_DM=y' "$DEFCONFIG"
+          grep -qx 'CONFIG_DM_CRYPT=y' "$DEFCONFIG"
+          echo "Verified: CONFIG_BLK_DEV_DM=y"
+          echo "Verified: CONFIG_DM_CRYPT=y"
+
+      - name: Prepare build environment
+        shell: bash
+        run: |
+          set -e
+          cd kernel
+          TOOLCHAIN="$NDK_HOME/toolchains/arm-linux-androideabi-4.9/prebuilt/linux-x86_64/bin"
+          test -x "$TOOLCHAIN/arm-linux-androideabi-gcc"
+          sed -i "s|^export CROSS_COMPILE=.*|export CROSS_COMPILE=\"$TOOLCHAIN/arm-linux-androideabi-\"|" build_kernel.sh
+          chmod +x build_kernel.sh build_SmartPack-ja3g.sh
+
+      - name: Build SmartPack LOS and RR kernels
+        shell: bash
+        run: |
+          set -e
+          cd kernel
+          . ./build_SmartPack-ja3g.sh
+
+      - name: Show build outputs
+        shell: bash
+        run: |
+          set -e
+          cd kernel
+          find release_SmartPack -maxdepth 2 -type f -printf '%p\n' | sort
+          echo "---- ZIP files ----"
+          find release_SmartPack -type f -iname '*.zip' -printf '%p\n' | sort
+
+      - name: Collect RR kernel artifact
+        shell: bash
+        run: |
+          set -e
+          cd kernel
+          mkdir -p ../artifacts
+
+          RR_ZIP="$(find release_SmartPack -type f -iname '*RR*ja3g*.zip' -o -type f -iname '*RR*I9500*.zip' | head -n 1)"
+          if [ -z "$RR_ZIP" ]; then
+            echo "Could not automatically identify the RR ZIP."
+            echo "Available files:"
+            find release_SmartPack -type f -maxdepth 2 -print
+            exit 1
+          fi
+
+          cp "$RR_ZIP" ../artifacts/SmartPack-RR-ja3g-dmcrypt.zip
+          sha256sum ../artifacts/SmartPack-RR-ja3g-dmcrypt.zip
+
+      - name: Upload flashable RR kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmartPack-RR-ja3g-dmcrypt
+          path: artifacts/SmartPack-RR-ja3g-dmcrypt.zip
+          if-no-files-found: error
